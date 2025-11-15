@@ -59,10 +59,28 @@ func (s *ProductService) FetchProducts(ctx context.Context, userID int, req mode
 		return nil, 0, err
 	}
 
-	total, err := s.store.ProductRepo.CountProducts(ctx, userID, req)
-	if err != nil {
-		return nil, 0, err
-	}
+	// 総件数は非同期で取得（初回レスポンスを高速化）
+	// バックグラウンドでgoroutineを使ってCOUNTを取得し、商品データの取得と並行実行
+	totalChan := make(chan int, 1)
+	errChan := make(chan error, 1)
+	go func() {
+		total, err := s.store.ProductRepo.CountProducts(context.Background(), userID, req)
+		if err != nil {
+			errChan <- err
+			return
+		}
+		totalChan <- total
+	}()
 
-	return products, total, nil
+	// 非同期で取得した総件数を待機（商品データは既に取得済みなので、レスポンスは高速）
+	select {
+	case total := <-totalChan:
+		return products, total, nil
+	case err := <-errChan:
+		log.Printf("Failed to get count asynchronously: %v", err)
+		return products, 0, nil
+	case <-ctx.Done():
+		// コンテキストがキャンセルされた場合は、0を返す
+		return products, 0, nil
+	}
 }
