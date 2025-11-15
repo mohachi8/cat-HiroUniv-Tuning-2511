@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
@@ -110,15 +111,25 @@ func (r *OrderRepository) ListOrders(ctx context.Context, userID int, req model.
 	}
 
 	// 総件数を取得するクエリ
-	countQuery := fmt.Sprintf(`
-		SELECT COUNT(*)
-		FROM orders o
-		JOIN products p ON o.product_id = p.product_id
-		%s
-	`, whereClause)
-
 	var total int
-	err := r.db.GetContext(ctx, &total, countQuery, whereArgs...)
+	var err error
+	log.Printf("ListOrders START userID=%d search=%q whereClause=%q whereArgs=%v page=%d page_size=%d", userID, req.Search, whereClause, whereArgs, req.Page, req.PageSize)
+	if req.Search == "" {
+		// 検索条件が無ければ JOIN は不要なので orders のみでカウントして高速化
+		countQuery := "SELECT COUNT(*) FROM orders WHERE user_id = ?"
+		err = r.db.GetContext(ctx, &total, countQuery, userID)
+		log.Printf("ListOrders COUNT no-search userID=%d countQuery=%q whereArgs=%v total=%d err=%v", userID, countQuery, whereArgs, total, err)
+	} else {
+		// 検索がある場合は product に対する条件があるため JOIN が必要
+		countQuery := fmt.Sprintf(`
+			SELECT COUNT(*)
+			FROM orders o
+			JOIN products p ON o.product_id = p.product_id
+			%s
+		`, whereClause)
+		err = r.db.GetContext(ctx, &total, countQuery, whereArgs...)
+		log.Printf("ListOrders COUNT with-search countQuery=%q whereArgs=%v total=%d err=%v", countQuery, whereArgs, total, err)
+	}
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get count: %w", err)
 	}
@@ -166,6 +177,8 @@ func (r *OrderRepository) ListOrders(ctx context.Context, userID int, req model.
 	selectArgs := make([]interface{}, len(whereArgs))
 	copy(selectArgs, whereArgs)
 	selectArgs = append(selectArgs, req.PageSize, req.Offset)
+
+	log.Printf("ListOrders SELECT query=%q selectArgs=%v", selectQuery, selectArgs)
 
 	type orderRow struct {
 		OrderID       int64        `db:"order_id"`
