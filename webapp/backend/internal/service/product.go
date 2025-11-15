@@ -54,6 +54,15 @@ func (s *ProductService) CreateOrders(ctx context.Context, userID int, items []m
 }
 
 func (s *ProductService) FetchProducts(ctx context.Context, userID int, req model.ListRequest) ([]model.Product, int, error) {
-	products, total, err := s.store.ProductRepo.ListProducts(ctx, userID, req)
-	return products, total, err
+	products, err := s.store.ProductRepo.ListProducts(ctx, userID, req)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	total, err := s.store.ProductRepo.CountProducts(ctx, userID, req)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return products, total, nil
 }

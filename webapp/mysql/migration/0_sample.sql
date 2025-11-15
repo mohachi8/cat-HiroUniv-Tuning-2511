@@ -3,10 +3,7 @@
 CREATE INDEX idx_orders_user_id ON orders(user_id);
 
 -- productsテーブルのパフォーマンス改善用インデックス
--- 検索用: nameとdescriptionでのLIKE検索を高速化
-CREATE INDEX idx_products_name ON products(name);
-CREATE INDEX idx_products_description ON products(description(255));
-
--- ソート用: value, weightでのソートを高速化
-CREATE INDEX idx_products_value ON products(value);
-CREATE INDEX idx_products_weight ON products(weight);
+-- ソート用: ORDER BY句で使用されるvalue, weightとproduct_idの複合インデックス
+-- これにより、ORDER BY value/weight + product_id ASCのソートが高速化される
+CREATE INDEX idx_products_value_product_id ON products(value, product_id);
+CREATE INDEX idx_products_weight_product_id ON products(weight, product_id);
