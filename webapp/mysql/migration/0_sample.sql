@@ -16,7 +16,8 @@ ADD COLUMN search_text TEXT AS (CONCAT(COALESCE(name, ''), ' ', COALESCE(descrip
 
 -- 検索用: search_textカラムにFULLTEXT INDEX (N-gramパーサー)を追加
 -- nameとdescriptionを結合したカラムに対してインデックスを貼ることで、
--- 短い検索文字列（1文字など）でもN-gramパーサーが効果を発揮しやすくなる
--- これにより、LIKE '%pattern%'よりも大幅に高速化される
+-- すべての検索文字列（1文字など短い文字列も含む）で高速化される
+-- ngram_token_size=1の設定により、すべての検索文字列でインデックスが有効に機能する
+-- COUNT(*)でも、FULLTEXT INDEXを使ってマッチする行だけをカウントできるため、全件スキャンは不要
 ALTER TABLE products 
 ADD FULLTEXT INDEX idx_products_search_text_ft (search_text) WITH PARSER ngram;
