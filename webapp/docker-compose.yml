@@ -117,6 +117,7 @@ services:
     volumes:
       - ./nginx/nginx.conf:/etc/nginx/nginx.conf
       - /da/tls:/da/tls:ro
+      - ./images:/app/images:ro  # 画像ディレクトリをマウント（直接配信用）
     networks:
       - webapp-network
     depends_on:
