@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"log"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
@@ -81,9 +80,50 @@ var allowedOrderSortOrders = map[string]bool{
 	"desc": true,
 }
 
+// 注文の総件数を取得
+func (r *OrderRepository) CountOrders(ctx context.Context, userID int, req model.ListRequest) (int, error) {
+	// WHERE句の構築
+	whereClause := "WHERE o.user_id = ?"
+	whereArgs := []interface{}{userID}
+
+	// 検索条件の追加
+	if req.Search != "" {
+		if req.Type == "prefix" {
+			whereClause += " AND p.name LIKE ?"
+			whereArgs = append(whereArgs, req.Search+"%")
+		} else {
+			// partial (デフォルト)
+			whereClause += " AND p.name LIKE ?"
+			whereArgs = append(whereArgs, "%"+req.Search+"%")
+		}
+	}
+
+	var count int
+	var err error
+	if req.Search == "" {
+		// 検索条件が無ければ JOIN は不要なので orders のみでカウントして高速化
+		countQuery := "SELECT COUNT(*) FROM orders WHERE user_id = ?"
+		err = r.db.GetContext(ctx, &count, countQuery, userID)
+	} else {
+		// 検索がある場合は product に対する条件があるため JOIN が必要
+		countQuery := fmt.Sprintf(`
+			SELECT COUNT(*)
+			FROM orders o
+			JOIN products p ON o.product_id = p.product_id
+			%s
+		`, whereClause)
+		err = r.db.GetContext(ctx, &count, countQuery, whereArgs...)
+	}
+	if err != nil {
+		return 0, fmt.Errorf("failed to get count: %w", err)
+	}
+
+	return count, nil
+}
+
 // 注文履歴一覧を取得
 // データベース側でJOIN、フィルタリング、ソート、ページングを実行
-func (r *OrderRepository) ListOrders(ctx context.Context, userID int, req model.ListRequest) ([]model.Order, int, error) {
+func (r *OrderRepository) ListOrders(ctx context.Context, userID int, req model.ListRequest) ([]model.Order, error) {
 	// ソートフィールドとソート順の検証
 	sortField := req.SortField
 	if !allowedOrderSortFields[sortField] {
@@ -108,30 +148,6 @@ func (r *OrderRepository) ListOrders(ctx context.Context, userID int, req model.
 			whereClause += " AND p.name LIKE ?"
 			whereArgs = append(whereArgs, "%"+req.Search+"%")
 		}
-	}
-
-	// 総件数を取得するクエリ
-	var total int
-	var err error
-	log.Printf("ListOrders START userID=%d search=%q whereClause=%q whereArgs=%v page=%d page_size=%d", userID, req.Search, whereClause, whereArgs, req.Page, req.PageSize)
-	if req.Search == "" {
-		// 検索条件が無ければ JOIN は不要なので orders のみでカウントして高速化
-		countQuery := "SELECT COUNT(*) FROM orders WHERE user_id = ?"
-		err = r.db.GetContext(ctx, &total, countQuery, userID)
-		log.Printf("ListOrders COUNT no-search userID=%d countQuery=%q whereArgs=%v total=%d err=%v", userID, countQuery, whereArgs, total, err)
-	} else {
-		// 検索がある場合は product に対する条件があるため JOIN が必要
-		countQuery := fmt.Sprintf(`
-			SELECT COUNT(*)
-			FROM orders o
-			JOIN products p ON o.product_id = p.product_id
-			%s
-		`, whereClause)
-		err = r.db.GetContext(ctx, &total, countQuery, whereArgs...)
-		log.Printf("ListOrders COUNT with-search countQuery=%q whereArgs=%v total=%d err=%v", countQuery, whereArgs, total, err)
-	}
-	if err != nil {
-		return nil, 0, fmt.Errorf("failed to get count: %w", err)
 	}
 
 	// ORDER BY句の構築
@@ -178,8 +194,6 @@ func (r *OrderRepository) ListOrders(ctx context.Context, userID int, req model.
 	copy(selectArgs, whereArgs)
 	selectArgs = append(selectArgs, req.PageSize, req.Offset)
 
-	log.Printf("ListOrders SELECT query=%q selectArgs=%v", selectQuery, selectArgs)
-
 	type orderRow struct {
 		OrderID       int64        `db:"order_id"`
 		ProductID     int          `db:"product_id"`
@@ -190,12 +204,12 @@ func (r *OrderRepository) ListOrders(ctx context.Context, userID int, req model.
 	}
 
 	var ordersRaw []orderRow
-	err = r.db.SelectContext(ctx, &ordersRaw, selectQuery, selectArgs...)
+	err := r.db.SelectContext(ctx, &ordersRaw, selectQuery, selectArgs...)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			return []model.Order{}, total, nil
+			return []model.Order{}, nil
 		}
-		return nil, 0, fmt.Errorf("failed to select orders: %w", err)
+		return nil, fmt.Errorf("failed to select orders: %w", err)
 	}
 
 	// orderRowからOrderに変換
@@ -211,5 +225,5 @@ func (r *OrderRepository) ListOrders(ctx context.Context, userID int, req model.
 		}
 	}
 
-	return orders, total, nil
+	return orders, nil
 }
