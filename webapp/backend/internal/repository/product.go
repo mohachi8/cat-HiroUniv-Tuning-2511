@@ -23,9 +23,12 @@ func (r *ProductRepository) ListProducts(ctx context.Context, userID int, req mo
 	args := []interface{}{}
 
 	if req.Search != "" {
-		baseQuery += " WHERE (name LIKE ? OR description LIKE ?)"
+		// FULLTEXT INDEX with N-gramパーサーを使用して部分一致検索を高速化
+		// MATCH() AGAINST()とLIKEを組み合わせることで、確実に結果を返しつつ高速化
+		// MATCH() AGAINST()が使えない場合（短い文字列など）でもLIKEでフォールバック
 		searchPattern := "%" + req.Search + "%"
-		args = append(args, searchPattern, searchPattern)
+		baseQuery += " WHERE ((MATCH(name) AGAINST(? IN BOOLEAN MODE) OR MATCH(description) AGAINST(? IN BOOLEAN MODE)) OR (name LIKE ? OR description LIKE ?))"
+		args = append(args, req.Search, req.Search, searchPattern, searchPattern)
 	}
 
 	baseQuery += " ORDER BY " + req.SortField + " " + req.SortOrder + " , product_id ASC"
@@ -47,9 +50,12 @@ func (r *ProductRepository) CountProducts(ctx context.Context, userID int, req m
 	args := []interface{}{}
 
 	if req.Search != "" {
-		baseQuery += " WHERE (name LIKE ? OR description LIKE ?)"
+		// FULLTEXT INDEX with N-gramパーサーを使用して部分一致検索を高速化
+		// MATCH() AGAINST()とLIKEを組み合わせることで、確実に結果を返しつつ高速化
+		// MATCH() AGAINST()が使えない場合（短い文字列など）でもLIKEでフォールバック
 		searchPattern := "%" + req.Search + "%"
-		args = append(args, searchPattern, searchPattern)
+		baseQuery += " WHERE ((MATCH(name) AGAINST(? IN BOOLEAN MODE) OR MATCH(description) AGAINST(? IN BOOLEAN MODE)) OR (name LIKE ? OR description LIKE ?))"
+		args = append(args, req.Search, req.Search, searchPattern, searchPattern)
 	}
 
 	err := r.db.GetContext(ctx, &count, baseQuery, args...)
