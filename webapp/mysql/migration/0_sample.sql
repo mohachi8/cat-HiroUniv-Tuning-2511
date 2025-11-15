@@ -10,3 +10,7 @@ CREATE INDEX idx_products_description ON products(description(255));
 -- ソート用: value, weightでのソートを高速化
 CREATE INDEX idx_products_value ON products(value);
 CREATE INDEX idx_products_weight ON products(weight);
+
+-- FULLTEXT index for faster fuzzy/fulltext search on products
+CREATE FULLTEXT INDEX ft_products_name_description ON products(name, description);
+ 
