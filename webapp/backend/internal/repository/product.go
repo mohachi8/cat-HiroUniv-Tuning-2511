@@ -45,36 +45,61 @@ func (r *ProductRepository) ListProducts(ctx context.Context, userID int, req mo
 	}
 
 	// WHERE句の構築
-	whereClause := ""
-	whereArgs := []interface{}{}
+	// UNIONを使用して各インデックスを効率的に活用し、重複を自動的に排除
+	var countQuery string
+	var selectQuery string
+	var countArgs []interface{}
+	var selectArgs []interface{}
+
 	if req.Search != "" {
-		whereClause = " WHERE (name LIKE ? OR description LIKE ?)"
 		searchPattern := "%" + req.Search + "%"
-		whereArgs = append(whereArgs, searchPattern, searchPattern)
+		// COUNTクエリ: UNIONを使用して重複を排除し、各インデックスを個別に使用
+		// これにより、idx_products_nameとidx_products_descriptionを効率的に活用できる
+		countQuery = `
+			SELECT COUNT(DISTINCT product_id) FROM (
+				SELECT product_id FROM products WHERE name LIKE ?
+				UNION
+				SELECT product_id FROM products WHERE description LIKE ?
+			) AS combined_results
+		`
+		countArgs = []interface{}{searchPattern, searchPattern}
+
+		// SELECTクエリ: UNIONで取得したproduct_idのリストを使って検索
+		// その後、ソート・ページングを実行
+		selectQuery = fmt.Sprintf(`
+			SELECT product_id, name, value, weight, image, description
+			FROM products
+			WHERE product_id IN (
+				SELECT product_id FROM (
+					SELECT product_id FROM products WHERE name LIKE ?
+					UNION
+					SELECT product_id FROM products WHERE description LIKE ?
+				) AS combined_results
+			)
+			ORDER BY %s %s, product_id ASC
+			LIMIT ? OFFSET ?
+		`, sortField, sortOrder)
+		selectArgs = []interface{}{searchPattern, searchPattern, req.PageSize, req.Offset}
+	} else {
+		// 検索条件なしの場合
+		countQuery = "SELECT COUNT(*) FROM products"
+		countArgs = nil
+
+		selectQuery = fmt.Sprintf(`
+			SELECT product_id, name, value, weight, image, description
+			FROM products
+			ORDER BY %s %s, product_id ASC
+			LIMIT ? OFFSET ?
+		`, sortField, sortOrder)
+		selectArgs = []interface{}{req.PageSize, req.Offset}
 	}
 
-	// 総件数を取得するクエリ
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM products%s", whereClause)
+	// 総件数を取得するクエリ（最適化されたクエリを使用）
 	var total int
-	err := r.db.GetContext(ctx, &total, countQuery, whereArgs...)
+	err := r.db.GetContext(ctx, &total, countQuery, countArgs...)
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to get count: %w", err)
 	}
-
-	// ページングされた商品を取得するクエリ
-	// LIMITとOFFSETを使用してデータベース側でページング処理
-	selectQuery := fmt.Sprintf(`
-		SELECT product_id, name, value, weight, image, description
-		FROM products
-		%s
-		ORDER BY %s %s, product_id ASC
-		LIMIT ? OFFSET ?
-	`, whereClause, sortField, sortOrder)
-
-	// SELECTクエリ用の引数（WHERE句の引数 + LIMIT + OFFSET）
-	selectArgs := make([]interface{}, len(whereArgs))
-	copy(selectArgs, whereArgs)
-	selectArgs = append(selectArgs, req.PageSize, req.Offset)
 
 	var products []model.Product
 	err = r.db.SelectContext(ctx, &products, selectQuery, selectArgs...)
