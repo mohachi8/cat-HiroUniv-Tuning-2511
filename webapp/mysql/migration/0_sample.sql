@@ -8,8 +8,13 @@ CREATE INDEX idx_orders_user_id ON orders(user_id);
 CREATE INDEX idx_products_value_product_id ON products(value, product_id);
 CREATE INDEX idx_products_weight_product_id ON products(weight, product_id);
 
--- 検索用: nameとdescriptionの部分一致検索を高速化するFULLTEXT INDEX
--- N-gramパーサー（ngram_token_size=5）を使用して、日本語の部分一致検索を最適化
--- MATCH() AGAINST()を使用することで、LIKE '%pattern%'よりも大幅に高速化される
-CREATE FULLTEXT INDEX idx_products_name_ft ON products(name) WITH PARSER ngram;
-CREATE FULLTEXT INDEX idx_products_description_ft ON products(description) WITH PARSER ngram;
+-- 検索用: nameとdescriptionを結合した生成カラムを追加
+-- このカラムにFULLTEXT INDEXを貼ることで、短い検索文字列でも高速化が可能
+-- STORED型の生成カラムを使用することで、検索パフォーマンスを最大化
+ALTER TABLE products ADD COLUMN search_text TEXT AS (CONCAT(COALESCE(name, ''), ' ', COALESCE(description, ''))) STORED;
+
+-- 検索用: search_textカラムにFULLTEXT INDEX (N-gramパーサー)を追加
+-- nameとdescriptionを結合したカラムに対してインデックスを貼ることで、
+-- 短い検索文字列（1文字など）でもN-gramパーサーが効果を発揮しやすくなる
+-- これにより、LIKE '%pattern%'よりも大幅に高速化される
+CREATE FULLTEXT INDEX idx_products_search_text_ft ON products(search_text) WITH PARSER ngram;
