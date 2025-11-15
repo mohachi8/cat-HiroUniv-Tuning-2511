@@ -5,7 +5,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
@@ -64,123 +63,140 @@ func (r *OrderRepository) GetShippingOrders(ctx context.Context) ([]model.Order,
 	return orders, err
 }
 
+// 許可されたソートフィールドのホワイトリスト
+var allowedOrderSortFields = map[string]bool{
+	"order_id":       true,
+	"product_name":   true,
+	"created_at":     true,
+	"shipped_status": true,
+	"arrived_at":     true,
+}
+
+// 許可されたソート順のホワイトリスト
+var allowedOrderSortOrders = map[string]bool{
+	"ASC":  true,
+	"DESC": true,
+	"asc":  true,
+	"desc": true,
+}
+
 // 注文履歴一覧を取得
+// データベース側でJOIN、フィルタリング、ソート、ページングを実行
 func (r *OrderRepository) ListOrders(ctx context.Context, userID int, req model.ListRequest) ([]model.Order, int, error) {
-	query := `
-        SELECT order_id, product_id, shipped_status, created_at, arrived_at
-        FROM orders
-        WHERE user_id = ?
-    `
-	type orderRow struct {
-		OrderID       int          `db:"order_id"`
-		ProductID     int          `db:"product_id"`
-		ShippedStatus string       `db:"shipped_status"`
-		CreatedAt     sql.NullTime `db:"created_at"`
-		ArrivedAt     sql.NullTime `db:"arrived_at"`
+	// ソートフィールドとソート順の検証
+	sortField := req.SortField
+	if !allowedOrderSortFields[sortField] {
+		sortField = "order_id"
 	}
-	var ordersRaw []orderRow
-	if err := r.db.SelectContext(ctx, &ordersRaw, query, userID); err != nil {
-		return nil, 0, err
+	sortOrder := strings.ToUpper(req.SortOrder)
+	if !allowedOrderSortOrders[sortOrder] {
+		sortOrder = "DESC"
 	}
 
-	var orders []model.Order
-	for _, o := range ordersRaw {
-		var productName string
-		if err := r.db.GetContext(ctx, &productName, "SELECT name FROM products WHERE product_id = ?", o.ProductID); err != nil {
-			return nil, 0, err
+	// WHERE句の構築
+	whereClause := "WHERE o.user_id = ?"
+	whereArgs := []interface{}{userID}
+
+	// 検索条件の追加
+	if req.Search != "" {
+		if req.Type == "prefix" {
+			whereClause += " AND p.name LIKE ?"
+			whereArgs = append(whereArgs, req.Search+"%")
+		} else {
+			// partial (デフォルト)
+			whereClause += " AND p.name LIKE ?"
+			whereArgs = append(whereArgs, "%"+req.Search+"%")
 		}
-		if req.Search != "" {
-			if req.Type == "prefix" {
-				if !strings.HasPrefix(productName, req.Search) {
-					continue
-				}
-			} else {
-				if !strings.Contains(productName, req.Search) {
-					continue
-				}
-			}
-		}
-		orders = append(orders, model.Order{
-			OrderID:       int64(o.OrderID),
-			ProductID:     o.ProductID,
-			ProductName:   productName,
-			ShippedStatus: o.ShippedStatus,
-			CreatedAt:     o.CreatedAt.Time,
-			ArrivedAt:     o.ArrivedAt,
-		})
 	}
 
-	switch req.SortField {
+	// 総件数を取得するクエリ
+	countQuery := fmt.Sprintf(`
+		SELECT COUNT(*)
+		FROM orders o
+		JOIN products p ON o.product_id = p.product_id
+		%s
+	`, whereClause)
+
+	var total int
+	err := r.db.GetContext(ctx, &total, countQuery, whereArgs...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("failed to get count: %w", err)
+	}
+
+	// ORDER BY句の構築
+	orderByClause := "ORDER BY "
+	switch sortField {
 	case "product_name":
-		if strings.ToUpper(req.SortOrder) == "DESC" {
-			sort.SliceStable(orders, func(i, j int) bool {
-				return orders[i].ProductName > orders[j].ProductName
-			})
-		} else {
-			sort.SliceStable(orders, func(i, j int) bool {
-				return orders[i].ProductName < orders[j].ProductName
-			})
-		}
+		orderByClause += fmt.Sprintf("p.name %s, o.order_id ASC", sortOrder)
 	case "created_at":
-		if strings.ToUpper(req.SortOrder) == "DESC" {
-			sort.SliceStable(orders, func(i, j int) bool {
-				return orders[i].CreatedAt.After(orders[j].CreatedAt)
-			})
-		} else {
-			sort.SliceStable(orders, func(i, j int) bool {
-				return orders[i].CreatedAt.Before(orders[j].CreatedAt)
-			})
-		}
+		orderByClause += fmt.Sprintf("o.created_at %s, o.order_id ASC", sortOrder)
 	case "shipped_status":
-		if strings.ToUpper(req.SortOrder) == "DESC" {
-			sort.SliceStable(orders, func(i, j int) bool {
-				return orders[i].ShippedStatus > orders[j].ShippedStatus
-			})
-		} else {
-			sort.SliceStable(orders, func(i, j int) bool {
-				return orders[i].ShippedStatus < orders[j].ShippedStatus
-			})
-		}
+		orderByClause += fmt.Sprintf("o.shipped_status %s, o.order_id ASC", sortOrder)
 	case "arrived_at":
-		if strings.ToUpper(req.SortOrder) == "DESC" {
-			sort.SliceStable(orders, func(i, j int) bool {
-				if orders[i].ArrivedAt.Valid && orders[j].ArrivedAt.Valid {
-					return orders[i].ArrivedAt.Time.After(orders[j].ArrivedAt.Time)
-				}
-				return orders[i].ArrivedAt.Valid
-			})
+		// NULL値の処理: NULLは最後に配置（MySQL互換性のためISNULL()を使用）
+		if sortOrder == "DESC" {
+			orderByClause += "ISNULL(o.arrived_at) ASC, o.arrived_at DESC, o.order_id ASC"
 		} else {
-			sort.SliceStable(orders, func(i, j int) bool {
-				if orders[i].ArrivedAt.Valid && orders[j].ArrivedAt.Valid {
-					return orders[i].ArrivedAt.Time.Before(orders[j].ArrivedAt.Time)
-				}
-				return orders[j].ArrivedAt.Valid
-			})
+			orderByClause += "ISNULL(o.arrived_at) ASC, o.arrived_at ASC, o.order_id ASC"
 		}
 	case "order_id":
 		fallthrough
 	default:
-		if strings.ToUpper(req.SortOrder) == "DESC" {
-			sort.SliceStable(orders, func(i, j int) bool {
-				return orders[i].OrderID > orders[j].OrderID
-			})
-		} else {
-			sort.SliceStable(orders, func(i, j int) bool {
-				return orders[i].OrderID < orders[j].OrderID
-			})
+		orderByClause += fmt.Sprintf("o.order_id %s", sortOrder)
+	}
+
+	// ページングされた注文を取得するクエリ
+	// JOINを使って商品名を一度に取得（N+1クエリ問題を解決）
+	selectQuery := fmt.Sprintf(`
+		SELECT 
+			o.order_id,
+			o.product_id,
+			p.name AS product_name,
+			o.shipped_status,
+			o.created_at,
+			o.arrived_at
+		FROM orders o
+		JOIN products p ON o.product_id = p.product_id
+		%s
+		%s
+		LIMIT ? OFFSET ?
+	`, whereClause, orderByClause)
+
+	// SELECTクエリ用の引数（WHERE句の引数 + LIMIT + OFFSET）
+	selectArgs := make([]interface{}, len(whereArgs))
+	copy(selectArgs, whereArgs)
+	selectArgs = append(selectArgs, req.PageSize, req.Offset)
+
+	type orderRow struct {
+		OrderID       int64        `db:"order_id"`
+		ProductID     int          `db:"product_id"`
+		ProductName   string       `db:"product_name"`
+		ShippedStatus string       `db:"shipped_status"`
+		CreatedAt     sql.NullTime `db:"created_at"`
+		ArrivedAt     sql.NullTime `db:"arrived_at"`
+	}
+
+	var ordersRaw []orderRow
+	err = r.db.SelectContext(ctx, &ordersRaw, selectQuery, selectArgs...)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return []model.Order{}, total, nil
+		}
+		return nil, 0, fmt.Errorf("failed to select orders: %w", err)
+	}
+
+	// orderRowからOrderに変換
+	orders := make([]model.Order, len(ordersRaw))
+	for i, o := range ordersRaw {
+		orders[i] = model.Order{
+			OrderID:       o.OrderID,
+			ProductID:     o.ProductID,
+			ProductName:   o.ProductName,
+			ShippedStatus: o.ShippedStatus,
+			CreatedAt:     o.CreatedAt.Time,
+			ArrivedAt:     o.ArrivedAt,
 		}
 	}
 
-	total := len(orders)
-	start := req.Offset
-	end := req.Offset + req.PageSize
-	if start > total {
-		start = total
-	}
-	if end > total {
-		end = total
-	}
-	pagedOrders := orders[start:end]
-
-	return pagedOrders, total, nil
+	return orders, total, nil
 }
