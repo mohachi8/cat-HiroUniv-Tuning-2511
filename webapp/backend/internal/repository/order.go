@@ -5,9 +5,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/jmoiron/sqlx"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type OrderRepository struct {
@@ -65,20 +70,120 @@ func (r *OrderRepository) UpdateStatuses(ctx context.Context, orderIDs []int64, 
 	return nil
 }
 
+// UpdateStatusesConditional updates statuses only when current status equals expectedCurrent.
+// Returns number of rows affected.
+func (r *OrderRepository) UpdateStatusesConditional(ctx context.Context, orderIDs []int64, newStatus string, expectedCurrent string) (int64, error) {
+	if len(orderIDs) == 0 {
+		return 0, nil
+	}
+
+	query, args, err := sqlx.In("UPDATE orders SET shipped_status = ? WHERE order_id IN (?) AND shipped_status = ?", newStatus, orderIDs, expectedCurrent)
+	if err != nil {
+		return 0, err
+	}
+	query = r.db.Rebind(query)
+	res, err := r.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	affected, err := res.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	return affected, nil
+}
+
 // 配送中(shipped_status:shipping)の注文一覧を取得
 func (r *OrderRepository) GetShippingOrders(ctx context.Context) ([]model.Order, error) {
+	tracer := otel.Tracer("backend/repository.OrderRepository")
+	ctx, span := tracer.Start(ctx, "GetShippingOrders")
+	defer span.End()
+
 	var orders []model.Order
+
+	// build-query span (child)
+	_, buildSpan := tracer.Start(ctx, "build-query")
 	query := `
-        SELECT
-            o.order_id,
-            p.weight,
-            p.value
-        FROM orders o
-        JOIN products p ON o.product_id = p.product_id
-        WHERE o.shipped_status = 'shipping'
-    `
-	err := r.db.SelectContext(ctx, &orders, query)
-	return orders, err
+		SELECT
+			o.order_id,
+			p.weight,
+			p.value
+		FROM orders o
+		JOIN products p ON o.product_id = p.product_id
+		WHERE o.shipped_status = 'shipping'
+	`
+	buildSpan.SetAttributes(attribute.String("db.statement_snippet", "SELECT o.order_id, p.weight, p.value FROM orders JOIN products WHERE shipped_status = 'shipping'"))
+	buildSpan.End()
+
+	// db select span (child) - the otelsql instrumentation will produce its own `sql.rows` span,
+	// but create an explicit parent child to make the hierarchy clear
+	selCtx, selSpan := tracer.Start(ctx, "db.select")
+
+	// Use QueryContext + manual rows.Scan loop so we can trace per-row scanning.
+	rows, err := r.db.QueryxContext(selCtx, query)
+	if err != nil {
+		selSpan.RecordError(err)
+		selSpan.SetStatus(codes.Error, err.Error())
+		selSpan.End()
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		return nil, err
+	}
+	defer rows.Close()
+
+	// scan-loop span (child of db.select)
+	_, scanLoopSpan := tracer.Start(selCtx, "scan-loop")
+	count := 0
+	// collect a small sample of order IDs to record as attribute (avoid per-row spans)
+	var sampleIDs []int64
+	for rows.Next() {
+		var o model.Order
+		if err := rows.Scan(&o.OrderID, &o.Weight, &o.Value); err != nil {
+			scanLoopSpan.RecordError(err)
+			scanLoopSpan.SetStatus(codes.Error, err.Error())
+			scanLoopSpan.End()
+			selSpan.RecordError(err)
+			selSpan.SetStatus(codes.Error, err.Error())
+			selSpan.End()
+			return nil, err
+		}
+		orders = append(orders, o)
+		if len(sampleIDs) < 5 {
+			sampleIDs = append(sampleIDs, o.OrderID)
+		}
+		count++
+	}
+	if err := rows.Err(); err != nil {
+		scanLoopSpan.RecordError(err)
+		scanLoopSpan.SetStatus(codes.Error, err.Error())
+		scanLoopSpan.End()
+		selSpan.RecordError(err)
+		selSpan.SetStatus(codes.Error, err.Error())
+		selSpan.End()
+		return nil, err
+	}
+	// record count and a small sample of order IDs for debugging without creating many spans
+	scanLoopSpan.SetAttributes(attribute.Int("orders.fetched", count))
+	if len(sampleIDs) > 0 {
+		// build comma separated string
+		var sids []string
+		for _, id := range sampleIDs {
+			sids = append(sids, strconv.FormatInt(id, 10))
+		}
+		scanLoopSpan.SetAttributes(attribute.String("orders.sample_ids", strings.Join(sids, ",")))
+	}
+	scanLoopSpan.End()
+
+	selSpan.SetAttributes(attribute.Int("orders.fetched", len(orders)))
+	selSpan.End()
+
+	// process-rows span (grandchild)
+	_, procSpan := tracer.Start(ctx, "process-rows")
+	procSpan.SetAttributes(attribute.Int("orders.count", len(orders)))
+	// minimal processing here; heavy processing should be traced where it happens
+	procSpan.End()
+
+	return orders, nil
 }
 
 // 許可されたソートフィールドのホワイトリスト

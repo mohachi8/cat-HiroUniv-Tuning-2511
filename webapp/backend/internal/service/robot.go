@@ -5,6 +5,11 @@ import (
 	"backend/internal/repository"
 	"backend/internal/service/utils"
 	"context"
+	"log"
+
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 )
 
 type RobotService struct {
@@ -19,33 +24,44 @@ func NewRobotService(store *repository.Store) *RobotService {
 // 注文の取得件数を制限した場合、ペナルティの対象になります。
 func (s *RobotService) GenerateDeliveryPlan(ctx context.Context, robotID string, capacity int) (*model.DeliveryPlan, error) {
 	var plan model.DeliveryPlan
-
 	err := utils.WithTimeout(ctx, func(ctx context.Context) error {
-		return s.store.ExecTx(ctx, func(txStore *repository.Store) error {
-			orders, err := txStore.OrderRepo.GetShippingOrders(ctx)
-			if err != nil {
-				return err
+		// 1) Read candidates outside transaction to avoid long-running transaction holding locks
+		orders, err := s.store.OrderRepo.GetShippingOrders(ctx)
+		if err != nil {
+			return err
+		}
+
+		// trace DP calculation to see if it's the bottleneck
+		tracer := otel.Tracer("backend/service.RobotService")
+		dpCtx, dpSpan := tracer.Start(ctx, "selectOrdersForDelivery")
+		dpSpan.SetAttributes(attribute.Int("orders.candidate_count", len(orders)), attribute.String("robot_id", robotID))
+		plan, err = selectOrdersForDelivery(dpCtx, orders, robotID, capacity)
+		if err != nil {
+			dpSpan.RecordError(err)
+			dpSpan.SetStatus(codes.Error, err.Error())
+			dpSpan.End()
+			return err
+		}
+		dpSpan.SetAttributes(attribute.Int("plan.orders", len(plan.Orders)), attribute.Int("plan.total_weight", plan.TotalWeight))
+		dpSpan.End()
+
+		// 2) Short transaction: claim orders that are still 'shipping'
+		if len(plan.Orders) > 0 {
+			orderIDs := make([]int64, len(plan.Orders))
+			for i, order := range plan.Orders {
+				orderIDs[i] = order.OrderID
 			}
 
-			plan, err = selectOrdersForDelivery(ctx, orders, robotID, capacity)
-			if err != nil {
-				return err
-			}
-
-			if len(plan.Orders) > 0 {
-				// orderIDsの生成を最適化: 事前に容量を確保し、ループを最適化
-				orderIDs := make([]int64, len(plan.Orders))
-				for i := range plan.Orders {
-					orderIDs[i] = plan.Orders[i].OrderID
-				}
-
-				if err := txStore.OrderRepo.UpdateStatuses(ctx, orderIDs, "delivering"); err != nil {
+			return s.store.ExecTx(ctx, func(txStore *repository.Store) error {
+				affected, err := txStore.OrderRepo.UpdateStatusesConditional(ctx, orderIDs, "delivering", "shipping")
+				if err != nil {
 					return err
 				}
-			}
-
-			return nil
-		})
+				log.Printf("Claimed %d/%d orders for delivering", affected, len(orderIDs))
+				return nil
+			})
+		}
+		return nil
 	})
 	if err != nil {
 		return nil, err
