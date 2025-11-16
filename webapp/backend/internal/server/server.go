@@ -19,10 +19,10 @@ type Server struct {
 	Router *chi.Mux
 }
 
-func NewServer() (*Server, *sqlx.DB, error) {
+func NewServer() (*Server, *sqlx.DB, *repository.Store, error) {
 	dbConn, err := db.InitDBConnection()
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	store := repository.NewStore(dbConn)
@@ -66,7 +66,7 @@ func NewServer() (*Server, *sqlx.DB, error) {
 
 	s.setupRoutes(authHandler, productHandler, orderHandler, robotHandler, userAuthMW, robotAuthMW)
 
-	return s, dbConn, nil
+	return s, dbConn, store, nil
 }
 
 func (s *Server) setupRoutes(

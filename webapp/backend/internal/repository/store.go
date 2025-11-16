@@ -43,3 +43,19 @@ func (s *Store) ExecTx(ctx context.Context, fn func(txStore *Store) error) error
 
 	return tx.Commit()
 }
+
+// Close closes all prepared statements in repositories
+func (s *Store) Close() error {
+	var errs []error
+	if err := s.UserRepo.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	// 他のRepositoryにもPrepared Statementを追加した場合はここに追加
+	// if err := s.SessionRepo.Close(); err != nil {
+	//     errs = append(errs, err)
+	// }
+	if len(errs) > 0 {
+		return errs[0] // 最初のエラーを返す（簡易実装）
+	}
+	return nil
+}
