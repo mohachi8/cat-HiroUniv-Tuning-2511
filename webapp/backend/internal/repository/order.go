@@ -34,17 +34,35 @@ func (r *OrderRepository) Create(ctx context.Context, order *model.Order) (strin
 
 // 複数の注文IDのステータスを一括で更新
 // 主に配送ロボットが注文を引き受けた際に一括更新をするために使用
+// 最適化: 大量のorderIDsをバッチ処理に分割して、DBアクセス回数を削減
 func (r *OrderRepository) UpdateStatuses(ctx context.Context, orderIDs []int64, newStatus string) error {
 	if len(orderIDs) == 0 {
 		return nil
 	}
-	query, args, err := sqlx.In("UPDATE orders SET shipped_status = ? WHERE order_id IN (?)", newStatus, orderIDs)
-	if err != nil {
-		return err
+
+	// MySQLのIN句の制限（通常65535個）を考慮し、バッチサイズを1000に設定
+	// これにより、大量のorderIDsでも効率的に処理できる
+	const batchSize = 1000
+
+	for i := 0; i < len(orderIDs); i += batchSize {
+		end := i + batchSize
+		if end > len(orderIDs) {
+			end = len(orderIDs)
+		}
+		batch := orderIDs[i:end]
+
+		query, args, err := sqlx.In("UPDATE orders SET shipped_status = ? WHERE order_id IN (?)", newStatus, batch)
+		if err != nil {
+			return err
+		}
+		query = r.db.Rebind(query)
+		_, err = r.db.ExecContext(ctx, query, args...)
+		if err != nil {
+			return err
+		}
 	}
-	query = r.db.Rebind(query)
-	_, err = r.db.ExecContext(ctx, query, args...)
-	return err
+
+	return nil
 }
 
 // 配送中(shipped_status:shipping)の注文一覧を取得

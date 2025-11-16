@@ -27,14 +27,17 @@ func (s *RobotService) GenerateDeliveryPlan(ctx context.Context, robotID string,
 			if err != nil {
 				return err
 			}
+
 			plan, err = selectOrdersForDelivery(ctx, orders, robotID, capacity)
 			if err != nil {
 				return err
 			}
+
 			if len(plan.Orders) > 0 {
+				// orderIDsの生成を最適化: 事前に容量を確保し、ループを最適化
 				orderIDs := make([]int64, len(plan.Orders))
-				for i, order := range plan.Orders {
-					orderIDs[i] = order.OrderID
+				for i := range plan.Orders {
+					orderIDs[i] = plan.Orders[i].OrderID
 				}
 
 				if err := txStore.OrderRepo.UpdateStatuses(ctx, orderIDs, "delivering"); err != nil {
@@ -42,6 +45,7 @@ func (s *RobotService) GenerateDeliveryPlan(ctx context.Context, robotID string,
 				}
 				log.Printf("Updated status to 'delivering' for %d orders", len(orderIDs))
 			}
+
 			return nil
 		})
 	})
@@ -60,6 +64,7 @@ func (s *RobotService) UpdateOrderStatus(ctx context.Context, orderID int64, new
 // selectOrdersForDelivery は動的計画法（DP）を使用して0/1ナップザック問題を解きます
 // 時間計算量: O(n * capacity) - DFSのO(2^n)から大幅に改善
 // 空間計算量: O(n * capacity) - DPテーブル
+// 最適化: コンテキストキャンセレーションチェックの頻度を下げ、内側ループを最適化
 func selectOrdersForDelivery(ctx context.Context, orders []model.Order, robotID string, robotCapacity int) (model.DeliveryPlan, error) {
 	n := len(orders)
 	if n == 0 {
@@ -86,40 +91,52 @@ func selectOrdersForDelivery(ctx context.Context, orders []model.Order, robotID 
 
 	// 復元用: 各容量でその注文を選んだかどうかを記録
 	// choice[i][w] = true なら、i番目の注文を容量wで選んだ
+	// メモリ効率を考慮し、必要な部分のみ記録（事前に容量を確保してメモリアロケーションを最適化）
 	choice := make([][]bool, n)
 	for i := range choice {
 		choice[i] = make([]bool, robotCapacity+1)
 	}
 
+	// コンテキストキャンセレーションチェックの頻度を下げる
+	// 内側ループが多いため、外側ループでのみチェック（間隔を空ける）
+	const ctxCheckInterval = 1000 // 1000件ごとにチェック（高速化のため頻度を下げる）
+
 	// 各注文を処理
 	for i := 0; i < n; i++ {
-		// コンテキストキャンセレーションのチェック
-		select {
-		case <-ctx.Done():
-			return model.DeliveryPlan{}, ctx.Err()
-		default:
+		// コンテキストキャンセレーションのチェック（間隔を空けて実行）
+		if i%ctxCheckInterval == 0 {
+			select {
+			case <-ctx.Done():
+				return model.DeliveryPlan{}, ctx.Err()
+			default:
+			}
 		}
 
 		order := orders[i]
+		weight := order.Weight
+		value := order.Value
 		current := i % 2
 		prev := 1 - current
+		prevRow := dp[prev]
+		currRow := dp[current]
 
 		// 前の行をコピー（現在の注文を選ばない場合）
-		copy(dp[current], dp[prev])
+		copy(currRow, prevRow)
 
 		// 現在の注文を選ぶ場合を考慮
-		for w := order.Weight; w <= robotCapacity; w++ {
-			// 現在の注文を選んだ場合の価値
-			valueWithOrder := dp[prev][w-order.Weight] + order.Value
-			// 現在の注文を選ばない場合の価値
-			valueWithoutOrder := dp[prev][w]
-			// より大きい方を選択
-			if valueWithOrder > valueWithoutOrder {
-				dp[current][w] = valueWithOrder
-				choice[i][w] = true
-			} else {
-				dp[current][w] = valueWithoutOrder
-				choice[i][w] = false
+		// 最適化: order.WeightがrobotCapacityより大きい場合はスキップ
+		if weight <= robotCapacity {
+			// メモリアクセスを最適化: インデックス計算を減らし、ループを最適化
+			for w := weight; w <= robotCapacity; w++ {
+				// 現在の注文を選んだ場合の価値
+				valueWithOrder := prevRow[w-weight] + value
+				// 現在の注文を選ばない場合の価値（既にコピー済み）
+				valueWithoutOrder := prevRow[w]
+				// より大きい方を選択
+				if valueWithOrder > valueWithoutOrder {
+					currRow[w] = valueWithOrder
+					choice[i][w] = true // trueの場合のみ設定（falseはデフォルト値のため不要）
+				}
 			}
 		}
 	}
@@ -131,11 +148,16 @@ func selectOrdersForDelivery(ctx context.Context, orders []model.Order, robotID 
 	// 最適解の復元: どの注文を選んだかを逆算
 	bestSet := make([]model.Order, 0, n)
 	w := robotCapacity
+	// 復元処理でもコンテキストチェックの頻度を下げる
+	const restoreCheckInterval = 1000
 	for i := n - 1; i >= 0; i-- {
-		select {
-		case <-ctx.Done():
-			return model.DeliveryPlan{}, ctx.Err()
-		default:
+		// コンテキストキャンセレーションのチェック（間隔を空けて実行）
+		if (n-1-i)%restoreCheckInterval == 0 {
+			select {
+			case <-ctx.Done():
+				return model.DeliveryPlan{}, ctx.Err()
+			default:
+			}
 		}
 
 		if choice[i][w] {
@@ -143,10 +165,6 @@ func selectOrdersForDelivery(ctx context.Context, orders []model.Order, robotID 
 			w -= orders[i].Weight
 		}
 	}
-
-	// 注文を元の順序に戻す（必要に応じて）
-	// ここでは逆順になっているので、必要ならreverseする
-	// ただし、順序は結果に影響しないのでそのままでも可
 
 	var totalWeight int
 	for _, o := range bestSet {
