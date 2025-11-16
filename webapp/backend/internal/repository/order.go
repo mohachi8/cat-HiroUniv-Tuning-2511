@@ -103,6 +103,7 @@ func (r *OrderRepository) GetShippingOrders(ctx context.Context) ([]model.Order,
 
 	// build-query span (child)
 	_, buildSpan := tracer.Start(ctx, "build-query")
+	const defaultCandidateLimit = 2000
 	query := `
 		SELECT
 			o.order_id,
@@ -111,8 +112,10 @@ func (r *OrderRepository) GetShippingOrders(ctx context.Context) ([]model.Order,
 		FROM orders o
 		JOIN products p ON o.product_id = p.product_id
 		WHERE o.shipped_status = 'shipping'
+		ORDER BY (p.value / NULLIF(p.weight, 0)) DESC
+		LIMIT ?
 	`
-	buildSpan.SetAttributes(attribute.String("db.statement_snippet", "SELECT o.order_id, p.weight, p.value FROM orders JOIN products WHERE shipped_status = 'shipping'"))
+	buildSpan.SetAttributes(attribute.String("db.statement_snippet", "SELECT o.order_id, p.weight, p.value FROM orders JOIN products WHERE shipped_status = 'shipping' ORDER BY (p.value/p.weight) DESC LIMIT ?"))
 	buildSpan.End()
 
 	// db select span (child) - the otelsql instrumentation will produce its own `sql.rows` span,
@@ -120,7 +123,7 @@ func (r *OrderRepository) GetShippingOrders(ctx context.Context) ([]model.Order,
 	selCtx, selSpan := tracer.Start(ctx, "db.select")
 
 	// Use QueryContext + manual rows.Scan loop so we can trace per-row scanning.
-	rows, err := r.db.QueryxContext(selCtx, query)
+	rows, err := r.db.QueryxContext(selCtx, query, defaultCandidateLimit)
 	if err != nil {
 		selSpan.RecordError(err)
 		selSpan.SetStatus(codes.Error, err.Error())
