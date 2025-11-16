@@ -65,3 +65,10 @@ func (r *UserRepository) FindByUserName(ctx context.Context, userName string) (*
 	}
 	return &user, nil
 }
+
+// UpdatePasswordHash パスワードハッシュを更新
+func (r *UserRepository) UpdatePasswordHash(ctx context.Context, userID int, passwordHash string) error {
+	query := "UPDATE users SET password_hash = ? WHERE user_id = ?"
+	_, err := r.db.ExecContext(ctx, query, passwordHash, userID)
+	return err
+}
