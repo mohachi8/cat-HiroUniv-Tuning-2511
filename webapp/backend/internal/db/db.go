@@ -4,7 +4,6 @@ import (
 	"backend/internal/telemetry"
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -18,12 +17,10 @@ func InitDBConnection() (*sqlx.DB, error) {
 		dbUrl = "user:password@tcp(db:3306)/hiroshimauniv2511-db"
 	}
 	dsn := fmt.Sprintf("%s?charset=utf8mb4&parseTime=True&loc=UTC", dbUrl)
-	// log.Printf(dsn)
 
 	driverName := telemetry.WrapSQLDriver("mysql")
 	dbConn, err := sqlx.Open(driverName, dsn)
 	if err != nil {
-		log.Printf("Failed to open database connection: %v", err)
 		return nil, fmt.Errorf("failed to open database connection: %w", err)
 	}
 
@@ -32,10 +29,8 @@ func InitDBConnection() (*sqlx.DB, error) {
 	err = dbConn.PingContext(ctx)
 	if err != nil {
 		dbConn.Close()
-		log.Printf("Failed to connect to database: %v", err)
 		return nil, fmt.Errorf("failed to connect to database: %w", err)
 	}
-	log.Println("Successfully connected to MySQL!")
 
 	// Tuned connection pool for higher concurrency. Adjust as needed per environment.
 	dbConn.SetMaxOpenConns(100)

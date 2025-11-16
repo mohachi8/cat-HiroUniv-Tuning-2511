@@ -4,7 +4,6 @@ import (
 	"backend/internal/model"
 	"backend/internal/service"
 	"encoding/json"
-	"log"
 	"net/http"
 	"strconv"
 )
@@ -34,7 +33,6 @@ func (h *RobotHandler) GetDeliveryPlan(w http.ResponseWriter, r *http.Request) {
 
 	plan, err := h.RobotSvc.GenerateDeliveryPlan(r.Context(), robotID, capacity)
 	if err != nil {
-		log.Printf("Failed to generate delivery plan: %v", err)
 		http.Error(w, "Failed to create delivery plan", http.StatusInternalServerError)
 		return
 	}
@@ -53,7 +51,6 @@ func (h *RobotHandler) UpdateOrderStatus(w http.ResponseWriter, r *http.Request)
 
 	err := h.RobotSvc.UpdateOrderStatus(r.Context(), req.OrderID, req.NewStatus)
 	if err != nil {
-		log.Printf("Failed to update order status for order %d: %v", req.OrderID, err)
 		http.Error(w, "Failed to update order status", http.StatusInternalServerError)
 		return
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"log"
 
 	"backend/internal/model"
 	"github.com/jmoiron/sqlx"
@@ -21,9 +20,6 @@ func NewUserRepository(db DBTX) *UserRepository {
 	if d, ok := db.(*sqlx.DB); ok {
 		if stmt, err := d.Preparex("SELECT user_id, password_hash, user_name FROM users WHERE user_name = ?"); err == nil {
 			ur.findByUserNameStmt = stmt
-		} else {
-			// prepare 失敗はログに残してフォールバック
-			log.Printf("prepare failed for FindByUserName: %v", err)
 		}
 	}
 	return ur

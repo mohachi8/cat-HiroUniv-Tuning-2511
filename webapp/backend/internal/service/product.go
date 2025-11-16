@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"log"
 
 	"backend/internal/model"
 	"backend/internal/repository"
@@ -49,7 +48,6 @@ func (s *ProductService) CreateOrders(ctx context.Context, userID int, items []m
 	if err != nil {
 		return nil, err
 	}
-	log.Printf("Created %d orders for user %d", len(insertedOrderIDs), userID)
 	return insertedOrderIDs, nil
 }
 
@@ -76,8 +74,7 @@ func (s *ProductService) FetchProducts(ctx context.Context, userID int, req mode
 	select {
 	case total := <-totalChan:
 		return products, total, nil
-	case err := <-errChan:
-		log.Printf("Failed to get count asynchronously: %v", err)
+	case <-errChan:
 		return products, 0, nil
 	case <-ctx.Done():
 		// コンテキストがキャンセルされた場合は、0を返す

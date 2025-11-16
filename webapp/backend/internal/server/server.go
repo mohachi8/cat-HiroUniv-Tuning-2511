@@ -6,13 +6,11 @@ import (
 	"backend/internal/middleware"
 	"backend/internal/repository"
 	"backend/internal/service"
-	"log"
 	"net/http"
 	"os"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jmoiron/sqlx"
-	"github.com/riandyrn/otelchi"
 )
 
 type Server struct {
@@ -41,19 +39,11 @@ func NewServer() (*Server, *sqlx.DB, *repository.Store, error) {
 
 	robotAPIKey := os.Getenv("ROBOT_API_KEY")
 	if robotAPIKey == "" {
-		log.Println("Warning: ROBOT_API_KEY is not set. Using default key 'test-robot-key'")
 		robotAPIKey = "test-robot-key"
 	}
 	robotAuthMW := middleware.RobotAuthMiddleware(robotAPIKey)
 
 	r := chi.NewRouter()
-	r.Use(otelchi.Middleware(
-		"backend-api",
-		otelchi.WithChiRoutes(r),
-		otelchi.WithFilter(func(req *http.Request) bool {
-			return req.URL.Path != "/api/health"
-		}),
-	))
 
 	r.Get("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -100,8 +90,5 @@ func (s *Server) Run() {
 		appPort = "8080"
 	}
 
-	log.Printf("Starting server on :%s", appPort)
-	if err := http.ListenAndServe(":"+appPort, s.Router); err != nil {
-		log.Fatalf("Failed to start server: %v", err)
-	}
+	_ = http.ListenAndServe(":"+appPort, s.Router)
 }

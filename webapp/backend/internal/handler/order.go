@@ -5,7 +5,6 @@ import (
 	"backend/internal/model"
 	"backend/internal/service"
 	"encoding/json"
-	"log"
 	"net/http"
 )
 
@@ -52,7 +51,6 @@ func (h *OrderHandler) List(w http.ResponseWriter, r *http.Request) {
 
 	orders, total, err := h.OrderSvc.FetchOrders(r.Context(), userID, req)
 	if err != nil {
-		log.Printf("Failed to fetch orders for user %d: %v", userID, err)
 		http.Error(w, "Failed to fetch orders", http.StatusInternalServerError)
 		return
 	}

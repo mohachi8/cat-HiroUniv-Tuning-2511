@@ -2,7 +2,6 @@ package middleware
 
 import (
 	"context"
-	"log"
 	"net/http"
 
 	"backend/internal/repository"
@@ -17,7 +16,6 @@ func UserAuthMiddleware(sessionRepo *repository.SessionRepository) func(http.Han
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			cookie, err := r.Cookie("session_id")
 			if err != nil {
-				log.Printf("Error retrieving session cookie: %v", err)
 				http.Error(w, "Unauthorized: No session cookie", http.StatusUnauthorized)
 				return
 			}
@@ -25,7 +23,6 @@ func UserAuthMiddleware(sessionRepo *repository.SessionRepository) func(http.Han
 
 			userID, err := sessionRepo.FindUserBySessionID(r.Context(), sessionID)
 			if err != nil {
-				log.Printf("Error finding user by session ID: %v", err)
 				http.Error(w, "Unauthorized: Invalid session", http.StatusUnauthorized)
 				return
 			}

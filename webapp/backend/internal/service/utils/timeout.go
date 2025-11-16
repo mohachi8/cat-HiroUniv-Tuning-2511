@@ -2,7 +2,6 @@ package utils
 
 import (
 	"context"
-	"log"
 	"time"
 )
 
@@ -27,7 +26,6 @@ func WithTimeout(parent context.Context, fn func(ctx context.Context) error) err
 	case err := <-done:
 		return err
 	case <-ctx.Done():
-		log.Printf("処理がタイムアウトしました (timeout=%s)", timeout)
 		return ctx.Err()
 	}
 }

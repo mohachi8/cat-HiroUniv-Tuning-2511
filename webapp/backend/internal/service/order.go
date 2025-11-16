@@ -4,7 +4,6 @@ import (
 	"backend/internal/model"
 	"backend/internal/repository"
 	"context"
-	"log"
 )
 
 type OrderService struct {
@@ -39,8 +38,7 @@ func (s *OrderService) FetchOrders(ctx context.Context, userID int, req model.Li
 	select {
 	case total := <-totalChan:
 		return orders, total, nil
-	case err := <-errChan:
-		log.Printf("Failed to get count asynchronously: %v", err)
+	case <-errChan:
 		return orders, 0, nil
 	case <-ctx.Done():
 		// コンテキストがキャンセルされた場合は、0を返す
