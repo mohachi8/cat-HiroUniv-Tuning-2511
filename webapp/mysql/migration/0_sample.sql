@@ -6,3 +6,5 @@ CREATE INDEX idx_orders_user_id ON orders(user_id);
 -- nameとdescriptionに個別にインデックスを貼ることで、OR条件の検索を高速化
 CREATE INDEX idx_products_name ON products(name);
 CREATE INDEX idx_products_description ON products(description(255));
+
+CREATE INDEX idx_users_user_name ON users(user_name);
